@@ -7,11 +7,12 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score
 from sklearn.utils import resample
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier
 import joblib
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Adaptive Scheduling", layout="wide")
-st.title("Adaptive Scheduling — AI + Adaptive Allocation (Improved Model)")
+st.title("Adaptive Scheduling — AI + Adaptive Allocation (Improved Random Forest Model)")
 
 # -------------------------
 # Upload dataset
@@ -48,22 +49,19 @@ X = df[feature_cols]
 y = df[target_col]
 
 # -------------------------
-# Balance dataset
+# Balance dataset across ALL classes
 # -------------------------
-df_balanced = df.copy()
-if y.value_counts().min() / y.value_counts().max() < 0.5:
-    st.warning("Dataset seems imbalanced, applying upsampling...")
-    majority_class = y.value_counts().idxmax()
-    df_majority = df[df[target_col] == majority_class]
-    df_minority = df[df[target_col] != majority_class]
-
-    df_minority_upsampled = resample(
-        df_minority,
+df_balanced = pd.DataFrame()
+max_size = y.value_counts().max()
+for label in y.unique():
+    df_class = df[df[target_col] == label]
+    df_class_balanced = resample(
+        df_class,
         replace=True,
-        n_samples=len(df_majority),
+        n_samples=max_size,
         random_state=42
     )
-    df_balanced = pd.concat([df_majority, df_minority_upsampled])
+    df_balanced = pd.concat([df_balanced, df_class_balanced])
 
 X = df_balanced[feature_cols]
 y = df_balanced[target_col]
@@ -82,24 +80,24 @@ preprocessor = ColumnTransformer(
 )
 
 # -------------------------
-# Train-test split (fix for small class issue)
+# Train-test split
 # -------------------------
-if y.nunique() > 1 and y.value_counts().min() >= 2:
-    stratify = y
-else:
-    stratify = None
-
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=stratify
+    X, y, test_size=0.2, random_state=42, stratify=y
 )
 
 # -------------------------
-# Train Gradient Boosting model
+# Train Random Forest model
 # -------------------------
 model = Pipeline(
     steps=[
         ("preprocessor", preprocessor),
-        ("classifier", GradientBoostingClassifier(n_estimators=200, random_state=42))
+        ("classifier", RandomForestClassifier(
+            n_estimators=500,
+            max_depth=None,
+            random_state=42,
+            n_jobs=-1
+        ))
     ]
 )
 
@@ -112,8 +110,35 @@ joblib.dump(model, "scheduling_model.pkl")
 y_pred = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
 
-st.success("✅ Model trained (Gradient Boosting).")
+st.success("✅ Model trained (Random Forest).")
 st.write(f"**Accuracy on test set:** {acc:.4f}")
+
+# -------------------------
+# Feature Importance
+# -------------------------
+st.subheader("Feature Importance (Random Forest)")
+
+try:
+    # Extract trained RandomForest from pipeline
+    rf = model.named_steps["classifier"]
+    if hasattr(rf, "feature_importances_"):
+        # Match transformed feature names
+        ohe = model.named_steps["preprocessor"].named_transformers_["cat"]
+        cat_features = ohe.get_feature_names_out(categorical) if categorical else []
+        feature_names = np.concatenate([numerical, cat_features])
+        importances = rf.feature_importances_
+
+        fi_df = pd.DataFrame({"Feature": feature_names, "Importance": importances})
+        fi_df = fi_df.sort_values("Importance", ascending=False).head(15)
+
+        st.dataframe(fi_df)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        fi_df.plot(kind="barh", x="Feature", y="Importance", ax=ax, legend=False)
+        plt.gca().invert_yaxis()
+        st.pyplot(fig)
+except Exception as e:
+    st.warning(f"Could not display feature importance: {e}")
 
 # -------------------------
 # Session state initialization

@@ -18,7 +18,7 @@ st.title("Adaptive Scheduling — AI + Adaptive Allocation (Improved Model)")
 # -------------------------
 uploaded_file = st.file_uploader("Upload your scheduling dataset (CSV)", type=["csv"])
 if not uploaded_file:
-    st.info("Upload a CSV with your historical jobs (must include a Machine_Available column).")
+    st.info("Upload a CSV with your historical jobs (must include a machine_available column).")
     st.stop()
 
 df = pd.read_csv(uploaded_file)
@@ -82,10 +82,15 @@ preprocessor = ColumnTransformer(
 )
 
 # -------------------------
-# Train-test split
+# Train-test split (safe stratify)
 # -------------------------
+if y.nunique() > 1 and y.value_counts().min() >= 2:
+    stratify = y
+else:
+    stratify = None
+
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
+    X, y, test_size=0.2, random_state=42, stratify=stratify
 )
 
 # -------------------------

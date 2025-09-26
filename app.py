@@ -2,49 +2,50 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 import joblib
 
 st.set_page_config(page_title="Adaptive Scheduling", layout="wide")
-st.title("Adaptive Scheduling — AI + Adaptive Allocation (Random Forest)")
+st.title("Adaptive Scheduling — AI + Adaptive Allocation (Improved RF)")
 
 # -------------------------
 # Upload dataset
 # -------------------------
 uploaded_file = st.file_uploader("Upload your scheduling dataset (CSV)", type=["csv"])
 if not uploaded_file:
-    st.info("Upload a CSV with your historical jobs (must include a machine column).")
+    st.info("Upload a CSV with your historical jobs (must include Machine_Availability column).")
     st.stop()
 
 df = pd.read_csv(uploaded_file)
 st.write("### Dataset preview", df.head())
 
 # -------------------------
-# Let user choose target and features
+# Target & features
 # -------------------------
-target_col = st.selectbox(
-    "Select target column (machine ID)",
-    df.columns,
-    index=df.columns.get_loc("Machine_Available") if "Machine_Available" in df.columns else 0
-)
-ignore_cols = st.multiselect("Columns to ignore as features (identifiers)", ["Job_ID"], default=["Job_ID"])
+target_col = "Machine_Availability"
+ignore_cols = ["Job_ID"] if "Job_ID" in df.columns else []
 feature_cols = [c for c in df.columns if c != target_col and c not in ignore_cols]
 st.write("Using features:", feature_cols)
 
-# -------------------------
-# Encode categorical features
-# -------------------------
-label_encoders = {}
-df_enc = df.copy()
-for col in df_enc.select_dtypes(include=['object']).columns:
-    le = LabelEncoder()
-    df_enc[col] = le.fit_transform(df_enc[col].astype(str))
-    label_encoders[col] = le
+X = df[feature_cols]
+y = df[target_col]
 
-X = df_enc[feature_cols]
-y = df_enc[target_col]
+# -------------------------
+# Preprocessing (OneHotEncoder for categorical features)
+# -------------------------
+categorical_cols = X.select_dtypes(include=["object"]).columns.tolist()
+numeric_cols = X.select_dtypes(exclude=["object"]).columns.tolist()
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols),
+        ("num", "passthrough", numeric_cols)
+    ]
+)
 
 # -------------------------
 # Train-test split
@@ -54,32 +55,34 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # -------------------------
-# Train Random Forest model
+# Model pipeline (Preprocessing + RandomForest)
 # -------------------------
-model = RandomForestClassifier(
-    n_estimators=300,
-    max_depth=None,
-    min_samples_split=2,
-    random_state=42,
-    n_jobs=-1
-)
+model = Pipeline(steps=[
+    ("preprocessor", preprocessor),
+    ("classifier", RandomForestClassifier(
+        n_estimators=500,
+        max_depth=None,
+        min_samples_split=2,
+        random_state=42,
+        n_jobs=-1
+    ))
+])
+
 model.fit(X_train, y_train)
 joblib.dump(model, "scheduling_model_rf.pkl")
 
 # -------------------------
-# Evaluate model
+# Accuracy
 # -------------------------
 y_pred = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
-
-st.success("Model trained (Random Forest).")
+st.success("Model trained with OneHot + RandomForest.")
 st.write(f"**Accuracy on test set:** {acc:.4f}")
 
 # -------------------------
 # Session state initialization
 # -------------------------
-machine_ids = sorted([int(x) for x in np.unique(df_enc[target_col])])
-
+machine_ids = sorted(y.unique())
 if "machine_loads" not in st.session_state:
     st.session_state.machine_loads = {str(m): 0 for m in machine_ids}
 if "manpower_available" not in st.session_state:
@@ -88,14 +91,14 @@ if "assigned_tasks" not in st.session_state:
     st.session_state.assigned_tasks = {str(m): [] for m in machine_ids}
 
 # -------------------------
-# Real-time input (form)
+# Real-time input
 # -------------------------
 st.subheader("Real-time Task Scheduling")
 with st.form("task_form"):
     inputs = {}
     for col in feature_cols:
-        if col in label_encoders:
-            choice = st.selectbox(col, label_encoders[col].classes_.tolist(), key=f"inp_{col}")
+        if col in categorical_cols:
+            choice = st.selectbox(col, df[col].dropna().unique().tolist(), key=f"inp_{col}")
             inputs[col] = choice
         else:
             val = st.number_input(col, step=1.0, key=f"inp_{col}")
@@ -103,30 +106,19 @@ with st.form("task_form"):
     submit = st.form_submit_button("Allocate Task")
 
 # -------------------------
-# Helper: transform user input
+# Helper: convert user input to DataFrame
 # -------------------------
 def build_input_row(inputs):
-    row = {}
-    for col in feature_cols:
-        if col in label_encoders:
-            row[col] = int(label_encoders[col].transform([str(inputs[col])])[0])
-        else:
-            row[col] = float(inputs[col])
-    return pd.DataFrame([row], columns=feature_cols)
+    return pd.DataFrame([inputs], columns=feature_cols)
 
 # -------------------------
 # Allocation logic
 # -------------------------
 if submit:
-    try:
-        inp_df = build_input_row(inputs)
-    except Exception as e:
-        st.error("Failed to encode inputs: " + str(e))
-        st.stop()
-
+    inp_df = build_input_row(inputs)
     prob_array = model.predict_proba(inp_df)[0]
-    classes = model.classes_.astype(int)
-    machine_probs = {int(c): float(prob_array[i]) for i, c in enumerate(classes)}
+    classes = model.classes_
+    machine_probs = {str(c): float(prob_array[i]) for i, c in enumerate(classes)}
 
     def find_col_like(names):
         for n in feature_cols:
@@ -155,16 +147,16 @@ if submit:
 
     candidate_scores = {}
     for m in machine_ids:
-        m_key = str(int(m))
+        m_key = str(m)
         current_load = float(st.session_state.machine_loads.get(m_key, 0))
-        prob = machine_probs.get(int(m), 0.0)
+        prob = machine_probs.get(m_key, 0.0)
         score = (
             load_weight * (current_load + est_time)
             + slack_weight * slack
             - prob_weight * prob
             - priority_factor * (priority_bonus)
         )
-        candidate_scores[int(m)] = score
+        candidate_scores[m_key] = score
 
     manpower_col = find_col_like(["manpower", "manpower_required"])
     manpower_req = int(inputs[manpower_col]) if manpower_col and manpower_col in inputs else 1
@@ -174,22 +166,18 @@ if submit:
         st.error(f"Not enough manpower: required {manpower_req}, available {available}")
     else:
         sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1])
-        assigned = None
-        for m, sc in sorted_candidates:
-            assigned = m
-            break
+        assigned = sorted_candidates[0][0] if sorted_candidates else None
 
-        if assigned is None:
+        if not assigned:
             st.error("No machine could be assigned.")
         else:
-            mkey = str(int(assigned))
-            st.session_state.machine_loads[mkey] = int(st.session_state.machine_loads.get(mkey, 0)) + int(est_time)
-            st.session_state.manpower_available = int(st.session_state.manpower_available) - int(manpower_req)
+            st.session_state.machine_loads[assigned] += int(est_time)
+            st.session_state.manpower_available -= int(manpower_req)
             task_summary = f"{inputs.get(find_col_like(['task','task_type']), '')} | load {inputs.get(find_col_like(['load','load_units']), '')} | est {est_time}h | priority {priority_val}"
-            st.session_state.assigned_tasks[mkey].append(task_summary)
+            st.session_state.assigned_tasks[assigned].append(task_summary)
 
             st.success(f"✅ Allocated to Machine {assigned}")
-            st.info(f"Machine {assigned} load now {st.session_state.machine_loads[mkey]} hrs. Manpower left: {st.session_state.manpower_available}")
+            st.info(f"Machine {assigned} load now {st.session_state.machine_loads[assigned]} hrs. Manpower left: {st.session_state.manpower_available}")
 
 if st.button("🔄 Reset System"):
     st.session_state.machine_loads = {str(m): 0 for m in machine_ids}
@@ -213,7 +201,7 @@ st.bar_chart(loads_series.astype(float))
 
 st.write("Available Manpower:", int(st.session_state.manpower_available))
 
-for mkey in sorted(st.session_state.assigned_tasks.keys(), key=lambda x: int(x)):
+for mkey in sorted(st.session_state.assigned_tasks.keys(), key=lambda x: str(x)):
     with st.expander(f"Machine {mkey} tasks ({len(st.session_state.assigned_tasks[mkey])})"):
         for t in st.session_state.assigned_tasks[mkey]:
             st.write("-", t)

@@ -82,7 +82,7 @@ preprocessor = ColumnTransformer(
 )
 
 # -------------------------
-# Train-test split (safe stratify)
+# Train-test split (fix for small class issue)
 # -------------------------
 if y.nunique() > 1 and y.value_counts().min() >= 2:
     stratify = y
@@ -128,14 +128,18 @@ if "assigned_tasks" not in st.session_state:
     st.session_state.assigned_tasks = {m: [] for m in machine_ids}
 
 # -------------------------
-# Real-time input form
+# Real-time input form (with dropdowns for categorical features)
 # -------------------------
 st.subheader("Real-time Task Scheduling")
 with st.form("task_form"):
     inputs = {}
     for col in feature_cols:
         if col in categorical:
-            choice = st.text_input(f"{col}", key=f"inp_{col}")
+            unique_vals = sorted(df[col].dropna().unique())
+            if len(unique_vals) > 0:
+                choice = st.selectbox(f"{col}", options=unique_vals, key=f"inp_{col}")
+            else:
+                choice = st.text_input(f"{col}", key=f"inp_{col}")
             inputs[col] = choice
         else:
             val = st.number_input(f"{col}", step=1.0, key=f"inp_{col}")

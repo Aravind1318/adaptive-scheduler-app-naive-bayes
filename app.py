@@ -18,7 +18,7 @@ st.title("Adaptive Scheduling — AI + Adaptive Allocation (Improved Model)")
 # -------------------------
 uploaded_file = st.file_uploader("Upload your scheduling dataset (CSV)", type=["csv"])
 if not uploaded_file:
-    st.info("Upload a CSV with your historical jobs (must include a machine_availability column).")
+    st.info("Upload a CSV with your historical jobs (must include a Machine_availability column).")
     st.stop()
 
 df = pd.read_csv(uploaded_file)
@@ -34,11 +34,11 @@ st.write("### Dataset preview", df.head())
 # -------------------------
 # Target and features
 # -------------------------
-if "machine_availability" not in df.columns:
-    st.error("❌ Could not find 'machine_availability' column in your dataset. Please check column names.")
+if "Machine_availability" not in df.columns:
+    st.error("❌ Could not find 'Machine_availability' column in your dataset. Please check column names.")
     st.stop()
 
-target_col = "machine_availability"
+target_col = "Machine_availability"
 ignore_cols = ["job_id"] if "job_id" in df.columns else []
 feature_cols = [c for c in df.columns if c != target_col and c not in ignore_cols]
 

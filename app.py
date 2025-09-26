@@ -34,11 +34,11 @@ st.write("### Dataset preview", df.head())
 # -------------------------
 # Target and features
 # -------------------------
-if "Machine_Available" not in df.columns:
-    st.error("❌ Could not find 'Machine_Available' column in your dataset. Please check column names.")
+if "machine_available" not in df.columns:
+    st.error("❌ Could not find 'machine_available' column in your dataset. Please check column names.")
     st.stop()
 
-target_col = "Machine_Available"
+target_col = "machine_available"
 ignore_cols = ["job_id"] if "job_id" in df.columns else []
 feature_cols = [c for c in df.columns if c != target_col and c not in ignore_cols]
 

@@ -1,20 +1,19 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import accuracy_score
 from sklearn.utils import resample
 from xgboost import XGBClassifier
 import joblib
-from scipy.stats import randint, uniform
 
 # -------------------------
 # Streamlit setup
 # -------------------------
 st.set_page_config(page_title="Adaptive Scheduling", layout="wide")
-st.title("Adaptive Scheduling — AI + Adaptive Allocation (XGBoost + Hyperparameter Tuning)")
+st.title("Adaptive Scheduling — AI + Adaptive Allocation (XGBoost)")
 
 # -------------------------
 # Upload dataset
@@ -72,7 +71,7 @@ X = df_balanced[feature_cols]
 y = df_balanced[target_col]
 
 # -------------------------
-# Encode target (LabelEncoder for XGBoost)
+# Encode target
 # -------------------------
 le = LabelEncoder()
 y = le.fit_transform(y)
@@ -104,64 +103,40 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # -------------------------
-# Transform features to dense arrays for XGBoost
-# -------------------------
-# -------------------------
-# Transform features to dense arrays for XGBoost
+# Transform features
 # -------------------------
 X_train_dense = preprocessor.fit_transform(X_train)
 X_test_dense = preprocessor.transform(X_test)
 
-# If output is sparse, convert to dense
 if hasattr(X_train_dense, "toarray"):
     X_train_dense = X_train_dense.toarray()
     X_test_dense = X_test_dense.toarray()
 
-
 # -------------------------
-# Hyperparameter tuning
+# Train XGBoost (no tuning, fixed params)
 # -------------------------
-st.info("⏳ Running hyperparameter tuning for XGBoost... this may take a while")
-
-param_dist = {
-    "n_estimators": randint(100, 500),
-    "max_depth": randint(3, 10),
-    "learning_rate": uniform(0.01, 0.3),
-    "subsample": uniform(0.6, 0.4),
-    "colsample_bytree": uniform(0.6, 0.4),
-}
-
 xgb = XGBClassifier(
     objective="multi:softmax",
+    eval_metric="mlogloss",
     random_state=42,
     use_label_encoder=False,
-    eval_metric="mlogloss"
+    n_estimators=200,
+    max_depth=6,
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8
 )
 
-search = RandomizedSearchCV(
-    estimator=xgb,
-    param_distributions=param_dist,
-    n_iter=20,  # increase to 50+ for better tuning
-    scoring="accuracy",
-    cv=3,
-    verbose=1,
-    random_state=42,
-    n_jobs=-1
-)
-
-search.fit(X_train_dense, y_train)
-
-best_model = search.best_estimator_
-joblib.dump((preprocessor, best_model), "scheduling_model.pkl")
+xgb.fit(X_train_dense, y_train)
+joblib.dump((preprocessor, xgb), "scheduling_model.pkl")
 
 # -------------------------
-# Evaluate best model
+# Evaluate
 # -------------------------
-y_pred = best_model.predict(X_test_dense)
+y_pred = xgb.predict(X_test_dense)
 acc = accuracy_score(y_test, y_pred)
 
-st.success("✅ Best model found and trained (XGBoost + tuning).")
-st.write(f"**Best Params:** {search.best_params_}")
+st.success("✅ Model trained (XGBoost).")
 st.write(f"**Accuracy on test set:** {acc:.4f}")
 
 # -------------------------
@@ -196,7 +171,7 @@ with st.form("task_form"):
     submit = st.form_submit_button("Allocate Task")
 
 # -------------------------
-# Prediction & Allocation logic
+# Prediction & Allocation
 # -------------------------
 def build_input_row(inputs):
     return pd.DataFrame([inputs], columns=feature_cols)
@@ -206,7 +181,7 @@ if submit:
     inp_dense = preprocessor.transform(inp_df).toarray()
 
     try:
-        assigned_encoded = best_model.predict(inp_dense)[0]
+        assigned_encoded = xgb.predict(inp_dense)[0]
         assigned = le.inverse_transform([assigned_encoded])[0]
         st.success(f"✅ Allocated to Machine {assigned}")
 

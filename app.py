@@ -1,17 +1,20 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score
 from sklearn.utils import resample
 from xgboost import XGBClassifier
 import joblib
+from scipy.stats import randint, uniform
 
+# -------------------------
+# Streamlit setup
+# -------------------------
 st.set_page_config(page_title="Adaptive Scheduling", layout="wide")
-st.title("Adaptive Scheduling — AI + Adaptive Allocation (XGBoost Model)")
+st.title("Adaptive Scheduling — AI + Adaptive Allocation (XGBoost + Hyperparameter Tuning)")
 
 # -------------------------
 # Upload dataset
@@ -42,24 +45,6 @@ target_col = "machine_available"
 ignore_cols = ["job_id"] if "job_id" in df.columns else []
 feature_cols = [c for c in df.columns if c != target_col and c not in ignore_cols]
 
-# -------------------------
-# Feature Engineering
-# -------------------------
-if "priority" in df.columns and "estimated_time" in df.columns:
-    df["priority_time"] = df["priority"].astype(float) * df["estimated_time"].astype(float)
-    feature_cols.append("priority_time")
-
-if "manpower_required" in df.columns and "estimated_time" in df.columns:
-    df["efficiency"] = df["manpower_required"].astype(float) / (df["estimated_time"].astype(float) + 1e-5)
-    feature_cols.append("efficiency")
-
-# Example: If timestamp column exists, extract time-based features
-if "timestamp" in df.columns:
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df["day_of_week"] = df["timestamp"].dt.dayofweek
-    df["hour"] = df["timestamp"].dt.hour
-    feature_cols.extend(["day_of_week", "hour"])
-
 st.write("Using features:", feature_cols)
 
 X = df[feature_cols]
@@ -87,6 +72,13 @@ X = df_balanced[feature_cols]
 y = df_balanced[target_col]
 
 # -------------------------
+# Encode target (LabelEncoder for XGBoost)
+# -------------------------
+le = LabelEncoder()
+y = le.fit_transform(y)
+joblib.dump(le, "label_encoder.pkl")
+
+# -------------------------
 # Preprocessing
 # -------------------------
 categorical = X.select_dtypes(include=["object"]).columns.tolist()
@@ -102,7 +94,7 @@ preprocessor = ColumnTransformer(
 # -------------------------
 # Train-test split
 # -------------------------
-if y.nunique() > 1 and y.value_counts().min() >= 2:
+if len(np.unique(y)) > 1 and np.min(np.bincount(y)) >= 2:
     stratify = y
 else:
     stratify = None
@@ -112,39 +104,61 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # -------------------------
-# Train XGBoost model
+# Transform features to dense arrays for XGBoost
 # -------------------------
-model = Pipeline(
-    steps=[
-        ("preprocessor", preprocessor),
-        ("classifier", XGBClassifier(
-            n_estimators=500,
-            learning_rate=0.05,
-            max_depth=8,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1
-        ))
-    ]
+X_train_dense = preprocessor.fit_transform(X_train).toarray()
+X_test_dense = preprocessor.transform(X_test).toarray()
+
+# -------------------------
+# Hyperparameter tuning
+# -------------------------
+st.info("⏳ Running hyperparameter tuning for XGBoost... this may take a while")
+
+param_dist = {
+    "n_estimators": randint(100, 500),
+    "max_depth": randint(3, 10),
+    "learning_rate": uniform(0.01, 0.3),
+    "subsample": uniform(0.6, 0.4),
+    "colsample_bytree": uniform(0.6, 0.4),
+}
+
+xgb = XGBClassifier(
+    objective="multi:softmax",
+    random_state=42,
+    use_label_encoder=False,
+    eval_metric="mlogloss"
 )
 
-model.fit(X_train, y_train)
-joblib.dump(model, "scheduling_model.pkl")
+search = RandomizedSearchCV(
+    estimator=xgb,
+    param_distributions=param_dist,
+    n_iter=20,  # increase to 50+ for better tuning
+    scoring="accuracy",
+    cv=3,
+    verbose=1,
+    random_state=42,
+    n_jobs=-1
+)
+
+search.fit(X_train_dense, y_train)
+
+best_model = search.best_estimator_
+joblib.dump((preprocessor, best_model), "scheduling_model.pkl")
 
 # -------------------------
-# Evaluate
+# Evaluate best model
 # -------------------------
-y_pred = model.predict(X_test)
+y_pred = best_model.predict(X_test_dense)
 acc = accuracy_score(y_test, y_pred)
 
-st.success("✅ Model trained (XGBoost).")
+st.success("✅ Best model found and trained (XGBoost + tuning).")
+st.write(f"**Best Params:** {search.best_params_}")
 st.write(f"**Accuracy on test set:** {acc:.4f}")
 
 # -------------------------
 # Session state initialization
 # -------------------------
-machine_ids = sorted([str(x) for x in y.unique()])
+machine_ids = sorted([str(x) for x in le.inverse_transform(np.unique(y))])
 
 if "machine_loads" not in st.session_state:
     st.session_state.machine_loads = {m: 0 for m in machine_ids}
@@ -173,25 +187,25 @@ with st.form("task_form"):
     submit = st.form_submit_button("Allocate Task")
 
 # -------------------------
-# Transform input row
+# Prediction & Allocation logic
 # -------------------------
 def build_input_row(inputs):
     return pd.DataFrame([inputs], columns=feature_cols)
 
-# -------------------------
-# Allocation logic
-# -------------------------
 if submit:
     inp_df = build_input_row(inputs)
+    inp_dense = preprocessor.transform(inp_df).toarray()
+
     try:
-        assigned = model.predict(inp_df)[0]
+        assigned_encoded = best_model.predict(inp_dense)[0]
+        assigned = le.inverse_transform([assigned_encoded])[0]
         st.success(f"✅ Allocated to Machine {assigned}")
 
-        est_col = [c for c in feature_cols if "estimated" in c][0] if any("estimated" in c for c in feature_cols) else None
-        est_time = float(inputs.get(est_col, 1.0))
+        est_col = [c for c in feature_cols if "estimated" in c]
+        est_time = float(inputs.get(est_col[0], 1.0)) if est_col else 1.0
 
-        manpower_col = [c for c in feature_cols if "manpower" in c][0] if any("manpower" in c for c in feature_cols) else None
-        manpower_req = int(inputs.get(manpower_col, 1))
+        manpower_col = [c for c in feature_cols if "manpower" in c]
+        manpower_req = int(inputs.get(manpower_col[0], 1)) if manpower_col else 1
 
         if manpower_req > st.session_state.manpower_available:
             st.error(f"Not enough manpower: required {manpower_req}, available {st.session_state.manpower_available}")

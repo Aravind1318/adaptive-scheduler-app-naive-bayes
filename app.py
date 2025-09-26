@@ -106,8 +106,17 @@ X_train, X_test, y_train, y_test = train_test_split(
 # -------------------------
 # Transform features to dense arrays for XGBoost
 # -------------------------
-X_train_dense = preprocessor.fit_transform(X_train).toarray()
-X_test_dense = preprocessor.transform(X_test).toarray()
+# -------------------------
+# Transform features to dense arrays for XGBoost
+# -------------------------
+X_train_dense = preprocessor.fit_transform(X_train)
+X_test_dense = preprocessor.transform(X_test)
+
+# If output is sparse, convert to dense
+if hasattr(X_train_dense, "toarray"):
+    X_train_dense = X_train_dense.toarray()
+    X_test_dense = X_test_dense.toarray()
+
 
 # -------------------------
 # Hyperparameter tuning

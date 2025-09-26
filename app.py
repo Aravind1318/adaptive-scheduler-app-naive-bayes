@@ -3,12 +3,12 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 import joblib
 
 st.set_page_config(page_title="Adaptive Scheduling", layout="wide")
-st.title("Adaptive Scheduling — AI + Adaptive Allocation (Naive Bayes)")
+st.title("Adaptive Scheduling — AI + Adaptive Allocation (Random Forest)")
 
 # -------------------------
 # Upload dataset
@@ -54,11 +54,17 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # -------------------------
-# Train Naive Bayes model
+# Train Random Forest model
 # -------------------------
-model = GaussianNB()
+model = RandomForestClassifier(
+    n_estimators=300,
+    max_depth=None,
+    min_samples_split=2,
+    random_state=42,
+    n_jobs=-1
+)
 model.fit(X_train, y_train)
-joblib.dump(model, "scheduling_model_nb.pkl")
+joblib.dump(model, "scheduling_model_rf.pkl")
 
 # -------------------------
 # Evaluate model
@@ -66,7 +72,7 @@ joblib.dump(model, "scheduling_model_nb.pkl")
 y_pred = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
 
-st.success("Model trained (Naive Bayes).")
+st.success("Model trained (Random Forest).")
 st.write(f"**Accuracy on test set:** {acc:.4f}")
 
 # -------------------------

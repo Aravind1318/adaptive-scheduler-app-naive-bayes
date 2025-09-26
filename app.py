@@ -7,12 +7,11 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score
 from sklearn.utils import resample
-from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 import joblib
-import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Adaptive Scheduling", layout="wide")
-st.title("Adaptive Scheduling — AI + Adaptive Allocation (Improved Random Forest Model)")
+st.title("Adaptive Scheduling — AI + Adaptive Allocation (XGBoost Model)")
 
 # -------------------------
 # Upload dataset
@@ -43,25 +42,46 @@ target_col = "machine_available"
 ignore_cols = ["job_id"] if "job_id" in df.columns else []
 feature_cols = [c for c in df.columns if c != target_col and c not in ignore_cols]
 
+# -------------------------
+# Feature Engineering
+# -------------------------
+if "priority" in df.columns and "estimated_time" in df.columns:
+    df["priority_time"] = df["priority"].astype(float) * df["estimated_time"].astype(float)
+    feature_cols.append("priority_time")
+
+if "manpower_required" in df.columns and "estimated_time" in df.columns:
+    df["efficiency"] = df["manpower_required"].astype(float) / (df["estimated_time"].astype(float) + 1e-5)
+    feature_cols.append("efficiency")
+
+# Example: If timestamp column exists, extract time-based features
+if "timestamp" in df.columns:
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["day_of_week"] = df["timestamp"].dt.dayofweek
+    df["hour"] = df["timestamp"].dt.hour
+    feature_cols.extend(["day_of_week", "hour"])
+
 st.write("Using features:", feature_cols)
 
 X = df[feature_cols]
 y = df[target_col]
 
 # -------------------------
-# Balance dataset across ALL classes
+# Balance dataset
 # -------------------------
-df_balanced = pd.DataFrame()
-max_size = y.value_counts().max()
-for label in y.unique():
-    df_class = df[df[target_col] == label]
-    df_class_balanced = resample(
-        df_class,
+df_balanced = df.copy()
+if y.value_counts().min() / y.value_counts().max() < 0.5:
+    st.warning("Dataset seems imbalanced, applying upsampling...")
+    majority_class = y.value_counts().idxmax()
+    df_majority = df[df[target_col] == majority_class]
+    df_minority = df[df[target_col] != majority_class]
+
+    df_minority_upsampled = resample(
+        df_minority,
         replace=True,
-        n_samples=max_size,
+        n_samples=len(df_majority),
         random_state=42
     )
-    df_balanced = pd.concat([df_balanced, df_class_balanced])
+    df_balanced = pd.concat([df_majority, df_minority_upsampled])
 
 X = df_balanced[feature_cols]
 y = df_balanced[target_col]
@@ -82,19 +102,27 @@ preprocessor = ColumnTransformer(
 # -------------------------
 # Train-test split
 # -------------------------
+if y.nunique() > 1 and y.value_counts().min() >= 2:
+    stratify = y
+else:
+    stratify = None
+
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
+    X, y, test_size=0.2, random_state=42, stratify=stratify
 )
 
 # -------------------------
-# Train Random Forest model
+# Train XGBoost model
 # -------------------------
 model = Pipeline(
     steps=[
         ("preprocessor", preprocessor),
-        ("classifier", RandomForestClassifier(
+        ("classifier", XGBClassifier(
             n_estimators=500,
-            max_depth=None,
+            learning_rate=0.05,
+            max_depth=8,
+            subsample=0.8,
+            colsample_bytree=0.8,
             random_state=42,
             n_jobs=-1
         ))
@@ -110,35 +138,8 @@ joblib.dump(model, "scheduling_model.pkl")
 y_pred = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
 
-st.success("✅ Model trained (Random Forest).")
+st.success("✅ Model trained (XGBoost).")
 st.write(f"**Accuracy on test set:** {acc:.4f}")
-
-# -------------------------
-# Feature Importance
-# -------------------------
-st.subheader("Feature Importance (Random Forest)")
-
-try:
-    # Extract trained RandomForest from pipeline
-    rf = model.named_steps["classifier"]
-    if hasattr(rf, "feature_importances_"):
-        # Match transformed feature names
-        ohe = model.named_steps["preprocessor"].named_transformers_["cat"]
-        cat_features = ohe.get_feature_names_out(categorical) if categorical else []
-        feature_names = np.concatenate([numerical, cat_features])
-        importances = rf.feature_importances_
-
-        fi_df = pd.DataFrame({"Feature": feature_names, "Importance": importances})
-        fi_df = fi_df.sort_values("Importance", ascending=False).head(15)
-
-        st.dataframe(fi_df)
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-        fi_df.plot(kind="barh", x="Feature", y="Importance", ax=ax, legend=False)
-        plt.gca().invert_yaxis()
-        st.pyplot(fig)
-except Exception as e:
-    st.warning(f"Could not display feature importance: {e}")
 
 # -------------------------
 # Session state initialization
@@ -153,7 +154,7 @@ if "assigned_tasks" not in st.session_state:
     st.session_state.assigned_tasks = {m: [] for m in machine_ids}
 
 # -------------------------
-# Real-time input form (with dropdowns for categorical features)
+# Real-time input form
 # -------------------------
 st.subheader("Real-time Task Scheduling")
 with st.form("task_form"):
